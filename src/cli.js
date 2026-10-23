@@ -499,8 +499,9 @@ function readKeys() {
   try { return fs.readFileSync(KEYS_FILE, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean); } catch { return []; }
 }
 function appendKey(key) { fs.appendFileSync(KEYS_FILE, key + '\n'); }
-/** A key the chat gate definitively refuses — transport failures never land here. */
-function appendDead(key, reason) { fs.appendFileSync(DEAD_FILE, `${new Date().toISOString()} ${key} ${reason}\n`); }
+/** A key the chat gate definitively refuses (401/403/quota/ban) — transport
+ *  failures never land here. Line format: `key<TAB>sebep<TAB>ISO`. */
+function appendDead(key, reason) { fs.appendFileSync(DEAD_FILE, `${key}\t${reason}\t${new Date().toISOString()}\n`); }
 
 /** Text of a completion whether the fork answered JSON or an SSE `data:` stream. */
 function readCompletion(text) {
