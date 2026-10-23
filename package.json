@@ -1,0 +1,34 @@
+{
+  "name": "zctotoken-bulk-apikey",
+  "version": "1.0.0",
+  "description": "Bulk-create ZCtotoken accounts with auto-generated API keys — OpenAI-compatible inference + 9Router connector.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "zctotoken-bulk-apikey": "src/cli.js",
+    "zctotoken-bulk-apikey-launcher": "src/launcher.js"
+  },
+  "main": "src/cli.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/launcher.js",
+    "mint": "node src/cli.js",
+    "9router": "node src/connect-9router.js",
+    "omniroute": "node src/connect-omniroute.js"
+  },
+  "keywords": [
+    "api-key",
+    "bulk",
+    "register",
+    "launcher",
+    "zctotoken",
+    "apikey"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ]
+}
