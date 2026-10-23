@@ -60,6 +60,7 @@ const crypto = require('crypto');
 
 const ROOT = path.basename(__dirname) === 'src' ? path.resolve(__dirname, '..') : __dirname;
 const KEYS_FILE = path.join(ROOT, 'keys.txt');
+const DEAD_FILE = path.join(ROOT, 'keys-dead.txt');
 const ACCOUNTS_FILE = path.join(ROOT, 'accounts.jsonl');
 const OUT_DIR = path.join(ROOT, 'out');
 
@@ -91,7 +92,8 @@ if (has('help') || has('h')) {
   console.log(`${TITLE} bulk-apikey — mint ${TITLE} accounts, one key each, verified by a live chat call.
 
   node src/cli.js --count 5          mint (a key is kept only after a chat 200)
-  node src/cli.js --verify-only      re-check every key in keys.txt
+  node src/cli.js --verify-only      re-check every key in keys.txt (a key the gate refuses
+                                     is written to keys-dead.txt)
   node src/cli.js --screen           test your proxy list against ${TITLE}
   node src/cli.js --help
 
@@ -497,7 +499,8 @@ function readKeys() {
   try { return fs.readFileSync(KEYS_FILE, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean); } catch { return []; }
 }
 function appendKey(key) { fs.appendFileSync(KEYS_FILE, key + '\n'); }
-function appendAccount(rec) { fs.appendFileSync(ACCOUNTS_FILE, JSON.stringify(rec) + '\n'); }
+/** A key the chat gate definitively refuses — transport failures never land here. */
+function appendDead(key, reason) { fs.appendFileSync(DEAD_FILE, `${new Date().toISOString()} ${key} ${reason}\n`); }
 
 /** Text of a completion whether the fork answered JSON or an SSE `data:` stream. */
 function readCompletion(text) {
@@ -691,17 +694,24 @@ async function verifyOnly() {
   const keys = readKeys();
   if (!keys.length) { console.log(`no keys in ${KEYS_FILE}`); process.exit(0); }
   let live = 0;
+  let dead = 0;
   for (let i = 0; i < keys.length; i++) {
     const exit = exits[i % exits.length];
     try {
       const g = await chatGate(exit, keys[i]);
       if (g.ok) live++;
+      // Only a definitive answer counts as dead: 429/5xx/transport are the exit's problem.
+      else if (g.status && g.status !== 429 && g.status < 500) {
+        dead++;
+        appendDead(keys[i], `chat ${g.status}: ${String(g.content || g.sample).slice(0, 80)}`);
+      }
       console.log(`  ${g.ok ? '✔' : '✘'} ${keys[i].slice(0, 8)}… chat=${g.status} ${g.content || g.sample.slice(0, 60)}`);
     } catch (e) {
       console.log(`  ✘ ${keys[i].slice(0, 8)}… ${String(e.message).slice(0, 90)}`);
     }
   }
   console.log(`verify: ${live}/${keys.length} keys live (${MODEL} on ${BASE})`);
+  if (dead) console.log(`${dead} key(s) written to ${DEAD_FILE}`);
   process.exit(live === keys.length ? 0 : 1);
 }
 

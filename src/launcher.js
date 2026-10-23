@@ -107,7 +107,7 @@ async function mintFlow(cfg) {
     console.log(`  ! ${cfg.proxyFile} not found — running WITHOUT a proxy (direct)`);
     console.log('    (put one exit per line there to route through proxies: http://host:port, socks5://host:port or host:port)');
   }
-  run(['--count', String(cfg.count), '--model', cfg.model], { ZCTOTOKEN_PROXIES: cfg.proxyFile });
+  run(['--auto', '--count', String(cfg.count), '--model', cfg.model], { ZCTOTOKEN_PROXIES: cfg.proxyFile });
 }
 
 async function verifyFlow(cfg) {
@@ -133,7 +133,7 @@ async function connectFlow(cfg) {
   } catch (e) {
     if (!/no API keys/.test(e.message)) throw e;
     console.log(`  ! ${e.message}`);
-    const apiKey = await ask('Single ZCtotoken key to register');
+    const apiKey = await ask('Single API key to register');
     if (apiKey) await connect9Router({ base: cfg.routerBase, password: cfg.routerPassword, apiKey });
   }
 }
@@ -149,7 +149,7 @@ async function connectFlowOmni(cfg) {
   } catch (e) {
     if (!/no API keys/.test(e.message)) throw e;
     console.log(`  ! ${e.message}`);
-    const apiKey = await ask('Single ZCtotoken key to register');
+    const apiKey = await ask('Single API key to register');
     if (apiKey) await connectOmniRoute({ base: cfg.routerBase, password: cfg.routerPassword, apiKey });
   }
 }
