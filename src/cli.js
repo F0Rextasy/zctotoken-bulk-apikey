@@ -358,10 +358,13 @@ function isPanelMail(m) {
   return PANEL_HINTS.some((h) => blob.includes(h));
 }
 
-/** The code, `验证码`/`code`-anchored (the extractor the 9F rail proved). */
+/** The code, `验证码`/`code`-anchored. zctotoken mails "Your verification code is: 51962b"
+ *  — the connector word `is` sits between the keyword and the code, so a gap of pure
+ *  non-alphanumerics alone never matches (measured 2026-10-23: every account was lost
+ *  to "no verification code inside the window" with the code plainly in the mail). */
 function extractCode(text) {
   const clean = String(text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  const m = clean.match(/(?:验证码|verification code|your code|code)[^A-Za-z0-9]{0,20}([A-Za-z0-9]{4,8})\b/i);
+  const m = clean.match(/(?:验证码|verification code|your code|code)[^A-Za-z0-9]{0,8}(?:is[^A-Za-z0-9]{0,4})?([A-Za-z0-9]{4,8})\b/i);
   return m ? m[1] : null;
 }
 
@@ -385,10 +388,10 @@ async function pollCode(exit, box, before, { timeoutMs = 240000, pollMs = 5000 }
       const text = r && typeof r.text === 'string' ? r.text : '';
       const code = extractCode(text);
       if (!code) continue;
-      if (isPanelMail(m)) return { code, subject: m.subject || '', hinted: true };
+      if (isPanelMail(m)) return { code, subject: m.subject || '', hinted: true, ts };
       // Mail that is not the panel's but did arrive after the request: keep it as
       // a last resort, but give the panel's own mail a few polls to land first.
-      if (!weak) weak = { code, subject: m.subject || '', at: Date.now(), hinted: false };
+      if (!weak) weak = { code, subject: m.subject || '', at: Date.now(), hinted: false, ts };
     }
     if (weak && Date.now() - weak.at > 20000) return weak;
     await sleep(pollMs);
@@ -481,7 +484,7 @@ async function acquireMail(exit) {
       const hit = rail === 'temptf'
         ? await tfPollCode(exit, box, before, { timeoutMs: CODE_WAIT_MS })
         : await pollCode(exit, box, before, { timeoutMs: CODE_WAIT_MS });
-      return { box, code: hit.code, subject: hit.subject, rail };
+      return { box, code: hit.code, subject: hit.subject, rail, ts: hit.ts };
     } catch (e) {
       lastErr = e;
     }
@@ -531,11 +534,27 @@ async function signUp(exit) {
   // Mail rail rotation: Emailnator first (gmail, no domain wall seen on this
   // panel), temp.tf as the fallback when Emailnator rate-limits or the panel
   // refuses the address. Both rails are pinned to this account's exit.
-  const { box, code, subject, rail } = await acquireMail(exit);
-  const reg = await exitJson(exit, `${BASE}/api/user/register`, {
+  const mail = await acquireMail(exit);
+  const { box, rail } = mail;
+  let code = mail.code;
+  const tryRegister = () => exitJson(exit, `${BASE}/api/user/register`, {
     method: 'POST',
     body: { username, password, email: box.plain, verification_code: code },
   });
+  let reg = await tryRegister();
+  // A recycled mailbox can hand us a code that a later request for the same address
+  // has already superseded — the panel answers "Verification code is incorrect or
+  // expired" while the code is plainly in the mail (measured 2026-10-23: the proven
+  // 7zs rail reads the newest code and retries, and that is the account it saves).
+  for (let a = 0; a < 3 && !(reg.json && reg.json.success); a++) {
+    if (!/code|验证码/i.test(String(reg.text || ''))) break;
+    const newer = rail === 'temptf'
+      ? await tfPollCode(exit, box, { ids: new Set(), ts: 0 }, { timeoutMs: 45000 }).catch(() => null)
+      : await pollCode(exit, box, { ids: new Set(), ts: mail.ts || 0 }, { timeoutMs: 45000 }).catch(() => null);
+    if (!newer || !newer.code || newer.code === code) break;
+    code = newer.code;
+    reg = await tryRegister();
+  }
   if (!(reg.json && reg.json.success)) throw new Error(`register HTTP ${reg.status}: ${String(reg.text).slice(0, 140)}`);
   const lg = await exitJson(exit, `${BASE}/api/user/login`, { method: 'POST', body: { username, password } });
   const token = lg.json && lg.json.data && lg.json.data.access_token;
@@ -591,7 +610,7 @@ async function signUp(exit) {
     }
     if (key) { usedGroup = g; break; }
   }
-  return { username, password, box, quota: data.quota, quotaAfterCheckin: data.quotaAfterCheckin, uid: data.id, code, subject, mailRail: rail, key, usedGroup, checkin };
+  return { username, password, box, quota: data.quota, quotaAfterCheckin: data.quotaAfterCheckin, uid: data.id, code, subject: mail.subject, mailRail: rail, key, usedGroup, checkin };
 }
 
 async function reveal(exit, auth, id) {
@@ -627,6 +646,10 @@ async function chatGate(exit, key, model = MODEL) {
 
 async function mint() {
   const exits = loadExits();
+  // A pool entry that answers the screen dies minutes later, so pinning attempts to the
+  // same head of the list burns every account of a round on the same corpses. Pick at
+  // random instead — the pool is the whole point (measured 2026-10-23).
+  const pickExit = () => exits[Math.floor(Math.random() * exits.length)];
   if (SCREEN) return void (await screen(exits));
   log(`${TITLE} · ${COUNT} key(s) · conc ${CONC} · model ${MODEL} · exits ${exits.filter(Boolean).length || 'direct'} · keys land in keys.txt`);
   let made = 0;
@@ -637,7 +660,7 @@ async function mint() {
       jobs.push((async () => {
         let lastErr = null;
         for (let t = 0; t < TRIES; t++) {
-          const exit = exits[(i + t) % exits.length];
+          const exit = exits.length > 1 ? pickExit() : exits[0];
           try {
             const rec = await signUp(exit);
             if (!rec.key) { lastErr = new Error('no key material in the token response'); continue; }
