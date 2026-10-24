@@ -40,7 +40,7 @@
  *   --code-wait MS   wait per mailbox for the code                  [240000]
  *   --no-checkin     skip the daily check-in when the panel has one
  *   --pool <file>    proxy list, one exit per line (env ZCTOTOKEN_PROXIES) [optional]
- *   --tries N        exits tried per account before giving up                 [2]
+ *   --exits N        exits tried per account before giving up                 [6]
  *   --timeout MS     per-request timeout                                  [60000]
  *   --verify-only    re-run every key in keys.txt through the chat gate
  *   --screen         only test the proxy list against ZCtotoken
@@ -112,7 +112,7 @@ or the ${ENV}_PROXIES env). Without a pool the tool connects DIRECTLY.`);
 const COUNT = Math.max(1, parseInt(arg('count', '5'), 10) || 5);
 const CONC = Math.min(8, Math.max(1, parseInt(arg('conc', '1'), 10) || 1));
 const GAP_MS = Math.max(0, parseInt(arg('gap', '1200'), 10) || 0);
-const TRIES = Math.max(1, parseInt(arg('tries', '2'), 10) || 2);
+const EXITS = Math.max(1, parseInt(arg('exits', '6'), 10) || 6);
 const TIMEOUT_MS = Math.max(5000, parseInt(arg('timeout', '60000'), 10) || 60000);
 // A dead exit must fail fast: the tunnel connect gets its own (much shorter)
 // budget, otherwise one dead proxy costs a whole request timeout per attempt.
@@ -305,6 +305,15 @@ function loadExits() {
   }
   return exits;
 }
+/** A dead exit, not a panel verdict — the flow rotates to the next candidate. */
+const isExitError = (e) =>
+  /proxy connect failed|proxy CONNECT refused|proxy timeout|connect timeout|connect failed|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|socket hang up|secureConnect|TLS|handshake/i.test(
+    String((e && e.message) || e),
+  );
+
+/** `host:port` of the exit in play, or `direct` when the pool is empty. */
+const exitLabel = (e) => (e ? `${e.host}:${e.port}` : 'direct');
+
 
 async function screen(exits) {
   let ok = 0;
@@ -657,14 +666,18 @@ async function mint() {
   if (SCREEN) return void (await screen(exits));
   log(`${TITLE} · ${COUNT} key(s) · conc ${CONC} · model ${MODEL} · exits ${exits.filter(Boolean).length || 'direct'} · keys land in keys.txt`);
   let made = 0;
+  const routes = exits[0] === null ? 1 : EXITS;
+  let transportDead = 0;
   for (let round = 0; round < COUNT; round += CONC) {
     const jobs = [];
     for (let k = 0; k < CONC && round + k < COUNT; k++) {
       const i = round + k;
       jobs.push((async () => {
         let lastErr = null;
-        for (let t = 0; t < TRIES; t++) {
+        let lastWasExit = false;
+        for (let a = 0; a < routes; a++) {
           const exit = exits.length > 1 ? pickExit() : exits[0];
+          lastWasExit = false;
           try {
             const rec = await signUp(exit);
             if (!rec.key) { lastErr = new Error('no key material in the token response'); continue; }
@@ -679,8 +692,16 @@ async function mint() {
             made++;
             log(`account ${i + 1} ✔ chat-200 ${MODEL} · group ${rec.usedGroup || '?'} · quota ${rec.quota}${rec.quotaAfterCheckin ? ` → ${rec.quotaAfterCheckin} (checkin ${rec.checkin})` : ''} · ${rec.key.slice(0, 8)}…`);
             return;
-          } catch (e) { lastErr = e; }
+          } catch (e) {
+            lastErr = e;
+            lastWasExit = isExitError(e);
+            if (lastWasExit) {
+              const where = exit ? `exit ${a + 1}/${routes} ${exitLabel(exit)}` : `direct attempt ${a + 1}/${routes}`;
+              log(`account ${i + 1}: ${where} dead (${String(e.message).slice(0, 70)})${exit ? ' → next exit' : ''}`);
+            }
+          }
         }
+        if (lastWasExit) transportDead++;
         log(`account ${i + 1}: ${lastErr ? String(lastErr.message).slice(0, 140) : 'failed'}`);
       })());
     }
@@ -688,6 +709,11 @@ async function mint() {
     if (GAP_MS) await sleep(GAP_MS);
   }
   log(`done — ${made}/${COUNT} key(s) written to ${KEYS_FILE}`);
+  if (!made && transportDead === COUNT) {
+    const route = exits[0] === null ? 'direct mode (no proxy list)' : `${exits.length}-exit pool`;
+    console.error(`[fatal] no usable route — ${COUNT} account(s) × ${routes} candidate(s) over ${route}: every attempt died at the transport layer.`);
+    process.exit(1);
+  }
 }
 
 async function verifyOnly() {
